@@ -13,7 +13,7 @@
  */
 
 (function(global, define){
-define(['require', 'when', './base'], function(require, when, basePlugin) {
+define(['require', 'when', './base', './resolver'], function(require, when, basePlugin, resolverAnalyzer) {
 
 	"use strict";
 
@@ -287,6 +287,7 @@ define(['require', 'when', './base'], function(require, when, basePlugin) {
 			factories.module = moduleFactory;
 			factories.create = instanceFactory;
 			factories.wire   = wireFactory;
+			factories.resolve = resolverFactory;
 
 			listeners = delegateArray(parent.listeners);// ? [].concat(parent.listeners) : [];
 
@@ -825,6 +826,103 @@ define(['require', 'when', './base'], function(require, when, basePlugin) {
 
 			when(getModule(module, spec), handleModule, fail);
 		}
+		
+		/**
+        * Factory that uses an AMD module either directly, or as a
+        * constructor or plain function to create the resulting item.
+		* In addition it also attempts to automatically resolve any items defined by
+		* the creating function.
+        *
+        * @param resolver {Resolver} resolver to resolve with the created component
+        * @param spec {Object} portion of the spec for the component to be created
+        */
+        function resolverFactory(resolver, spec /*, wire*/)
+        {
+            var fail, resolve, module, args, isConstructor, name;
+
+            fail = chainReject(resolver);
+            name = spec.id;
+
+            resolve = spec.resolve;
+            if (isStrictlyObject(resolve))
+            {
+                module = resolve.module;
+                args = resolve.args;
+                isConstructor = resolve.isConstructor;
+            }
+            else
+            {
+                module = resolve;
+            }
+
+            // Load the module, and use it to resolve the object
+            function handleModule(module)
+            {
+                function resolve(resolvedArgs)
+                {
+                    try
+                    {
+                        var instantiated = instantiate(module, resolvedArgs, isConstructor);
+                        resolver.resolve(instantiated);
+                    } catch (e)
+                    {
+                        resolver.reject(e);
+                    }
+                }
+
+                try
+                {
+                    // We'll either use the module directly, or we need
+                    // to instantiate/invoke it.
+                    if (isFunction(module))
+                    {
+                        // Run analyizer here
+                        var analysis = resolverAnalyzer.analyzeFunction(module);
+                        var params = analysis.parameters;
+
+                        // Assumption here is that args array supplied to wire contains
+                        //      enough to cover the null holes in the parameters.
+                        if (args)
+                        {
+                            var argI = 0;
+                            for (var i = 0, iLen = params.length; i < iLen; i++)
+                            {
+                                if (params[i] === null)
+                                    params[i] = args[argI++];
+                            }
+                        }
+                        args = params;
+
+                        // Include resolver store here, and capture all the missing items from the spec and bring them in.
+
+                        // Instantiate or invoke it and use the result
+                        if (args)
+                        {
+                            args = isArray(args) ? args : [args];
+                            when(createArray(args, name), resolve, fail);
+                        }
+                        else
+                        {
+                            // No args, don't need to process them, so can directly
+                            // insantiate the module and resolve
+                            resolve([]);
+
+                        }
+
+                    } else
+                    {
+                        // Simply use the module as is
+                        resolver.resolve(module);
+
+                    }
+                } catch (e)
+                {
+                    fail(e);
+                }
+            }
+
+            when(getModule(module, spec), handleModule, fail);
+        }
 
 		/**
 		 * Factory that creates either a child context, or a *function* that will create
